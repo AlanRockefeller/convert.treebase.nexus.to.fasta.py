@@ -12,11 +12,17 @@ import re
 
 def nexus_to_fasta(input_file, output_file):
     """
-    Converts DNA sequences from NEXUS format to FASTA format.
+    Converts DNA sequences from a NEXUS file to FASTA format.
     
+    This function reads a NEXUS file and extracts DNA sequences from its MATRIX section,
+    using taxon names from the TAXLABELS section. Quoted taxon names are preserved and cleaned
+    (by removing quotes and replacing spaces with underscores) to ensure compatibility with
+    FASTA formatting. The extracted sequences are written to the output file in blocks of 60
+    characters per line. Status messages are printed to indicate success or any issues encountered.
+        
     Args:
-        input_file (str): Path to the input NEXUS file
-        output_file (str): Path to the output FASTA file
+        input_file (str): Path to the input NEXUS file.
+        output_file (str): Path to the output FASTA file.
     """
     try:
         with open(input_file, 'r', encoding='utf-8') as f:
@@ -90,6 +96,13 @@ def nexus_to_fasta(input_file, output_file):
         print(f"Error: {e}")
 
 def main():
+    """
+    Entry point for converting DNA sequences from NEXUS to FASTA format.
+    
+    Validates the command-line arguments and invokes the conversion process. If the 
+    required input and output file paths are not provided, the script prints a usage 
+    message and exits.
+    """
     if len(sys.argv) != 3:
         print("Usage: python nexus_to_fasta.py input_file.nexus output_file.fasta")
         sys.exit(1)
