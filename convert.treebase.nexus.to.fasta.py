@@ -91,7 +91,7 @@ def nexus_to_fasta(input_file, output_file):
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: python nexus_to_fasta.py input_file.nexus output_file.fasta")
+        print("Usage: python convert.treebase.nexus.to.fasta.py input_file.nexus output_file.fasta")
         sys.exit(1)
     
     input_file = sys.argv[1]
