@@ -43,18 +43,39 @@ def nexus_to_fasta(input_file, output_file):
                 taxon_names.append((name, clean_name))
         
         # Extract sequences from the matrix
+        # Extract sequences from the matrix
         sequences = []
+        # Process matrix content line by line for more efficient extraction
+        matrix_lines = matrix_content.strip().split('\n')
+        taxon_to_sequence = {}
+
+        # First pass: identify starting positions for each taxon
+        for line in matrix_lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Try to match the beginning of a line with a taxon name
+            for taxon_original, _ in taxon_names:
+                # Handle quoted and unquoted taxon names
+                if (line.startswith(taxon_original) or 
+                    line.startswith(f"'{taxon_original}'") or 
+                    line.startswith(f'"{taxon_original}"')):
+                    # Extract the sequence part (everything after the taxon name)
+                    seq_part = line[len(taxon_original):].strip()
+                    if taxon_original not in taxon_to_sequence:
+                        taxon_to_sequence[taxon_original] = seq_part
+                    else:
+                        taxon_to_sequence[taxon_original] += seq_part
+        
         for taxon_original, taxon_clean in taxon_names:
-            # Find the sequence for this taxon in the matrix content
-            # Handle the case where the taxon name might be quoted in the matrix
-            pattern = re.escape(taxon_original) + r'\s+(.*?)(?=\s+\S+\s+|\s*$)'
-            seq_match = re.search(pattern, matrix_content, re.DOTALL)
-            if seq_match:
-                sequence = seq_match.group(1).strip()
-                # Remove all whitespace from the sequence
+            if taxon_original in taxon_to_sequence:
+                sequence = taxon_to_sequence[taxon_original]
+                # Remove all whitespace
                 sequence = re.sub(r'\s+', '', sequence)
                 sequences.append((taxon_clean, sequence))
-        
+            else:
+                print(f"Warning: No sequence found for taxon '{taxon_original}'")
         # Write sequences in FASTA format
         with open(output_file, 'w', encoding='utf-8') as f:
             for taxon_name, sequence in sequences:
