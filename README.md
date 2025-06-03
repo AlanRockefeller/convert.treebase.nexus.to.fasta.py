@@ -2,7 +2,9 @@
 
 A Python utility for converting DNA sequence alignments downloaded from TreeBASE in NEXUS format to FASTA format.
 
-*By Alan Rockefeller - March 28, 2025*
+*By Alan Rockefeller - June 3, 2025*
+
+*Version 1.0*
 
 ## Overview
 
