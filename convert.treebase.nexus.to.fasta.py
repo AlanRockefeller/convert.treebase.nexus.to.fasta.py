@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
+"""Convert TreeBASE NEXUS files to FASTA format.
 
-# Convert a NEXUS file from TreeBASE into a FASTA file that lots of DNA analysis software can understand.
+This script converts DNA sequences from NEXUS format (commonly used in TreeBASE)
+into the widely supported FASTA format. It handles complex cases like interleaved
+sequences, taxon labels with spaces or quotes, and nested comments.
 
-# Handles special characters well, at least the ones I have come across so far.   Older versions of this code didn't.
+By Alan Rockefeller - February 21, 2026
+Version 1.3
+"""
 
-# By Alan Rockefeller - February 21, 2026
-
-# Version 1.3
-
-
-import sys
-import re
 import os
+import re
+import sys
+from typing import Dict, List, Optional, Set, Tuple
 
 # Compiled regex patterns for use in nexus_to_fasta
 # Support single and double quoted names, or unquoted tokens
@@ -19,8 +20,15 @@ TAXON_NAME_SPLIT_PATTERN = re.compile(r"'[^']*'|\"[^\"]*\"|\S+")
 SEQUENCE_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
-def unquote_taxon_name(name):
-    """Removes single or double quotes from a taxon name if present."""
+def unquote_taxon_name(name: str) -> str:
+    """Removes single or double quotes from a taxon name if present.
+
+    Args:
+        name: The taxon name potentially containing quotes.
+
+    Returns:
+        The unquoted taxon name.
+    """
     if (name.startswith("'") and name.endswith("'")) or (
         name.startswith('"') and name.endswith('"')
     ):
@@ -29,11 +37,18 @@ def unquote_taxon_name(name):
     return name
 
 
-def strip_nexus_comments(text):
-    """Removes bracketed NEXUS comments, handling nested brackets and quotes."""
-    result = []
+def strip_nexus_comments(text: str) -> str:
+    """Removes bracketed NEXUS comments, handling nested brackets and quotes.
+
+    Args:
+        text: The input NEXUS string containing comments.
+
+    Returns:
+        The NEXUS string with comments removed.
+    """
+    result: List[str] = []
     depth = 0
-    in_quote = None  # None, "'", or '"'
+    in_quote: Optional[str] = None  # None, "'", or '"'
 
     for char in text:
         if in_quote:
@@ -53,8 +68,18 @@ def strip_nexus_comments(text):
     return "".join(result)
 
 
-def extract_nexus_block(content, block_name):
-    """Extracts a block like MATRIX or TAXLABELS, handling nested brackets and semicolons inside quotes."""
+def extract_nexus_block(content: str, block_name: str) -> Optional[str]:
+    """Extracts a block like MATRIX or TAXLABELS from NEXUS content.
+
+    Handles nested brackets and semicolons inside quotes.
+
+    Args:
+        content: The full NEXUS content string.
+        block_name: The name of the block to extract (e.g., 'MATRIX').
+
+    Returns:
+        The content of the requested block, or None if not found.
+    """
     # Use word boundaries to avoid matching substrings of other words
     pattern = re.compile(r"\b" + re.escape(block_name) + r"\b\s*", re.IGNORECASE)
     match = pattern.search(content)
@@ -63,7 +88,7 @@ def extract_nexus_block(content, block_name):
 
     start_index = match.end()
     depth = 0
-    in_quote = None
+    in_quote: Optional[str] = None
 
     for i in range(start_index, len(content)):
         char = content[i]
@@ -83,8 +108,16 @@ def extract_nexus_block(content, block_name):
     return None
 
 
-def make_unique(name, used_names):
-    """Makes a FASTA header unique by appending _2, _3, etc. if needed."""
+def make_unique(name: str, used_names: Set[str]) -> str:
+    """Makes a FASTA header unique by appending _2, _3, etc. if needed.
+
+    Args:
+        name: The desired FASTA header name.
+        used_names: A set of names already present in the FASTA file.
+
+    Returns:
+        A unique version of the input name.
+    """
     if name not in used_names:
         used_names.add(name)
         return name
@@ -97,15 +130,14 @@ def make_unique(name, used_names):
     return new_name
 
 
-def nexus_to_fasta(input_file, output_file):
-    """
-    Converts DNA sequences from NEXUS format to FASTA format.
+def nexus_to_fasta(input_file: str, output_file: str) -> None:
+    """Converts DNA sequences from NEXUS format to FASTA format.
 
     Args:
-        input_file (str): Path to the input NEXUS file
-        output_file (str): Path to the output FASTA file
+        input_file: Path to the input NEXUS file.
+        output_file: Path to the output FASTA file.
     """
-    content = None
+    content: Optional[str] = None
     try:
         with open(input_file, "r", encoding="utf-8") as f:
             content = f.read()
@@ -124,18 +156,16 @@ def nexus_to_fasta(input_file, output_file):
     if matrix_content_raw is None:
         print("Error: Could not find the MATRIX section in the NEXUS file.")
         sys.exit(1)
-        return
 
-    # 1. Fix: Strip comments from the entire block at once to handle multi-line comments
+    # Strip comments from the entire block at once to handle multi-line comments
     matrix_content_cleaned = strip_nexus_comments(matrix_content_raw)
     matrix_lines = matrix_content_cleaned.split("\n")
 
     try:
         # Find all taxon names in the TAXLABELS section
         taxlabels_content = extract_nexus_block(content, "TAXLABELS")
-        taxon_names_info = (
-            []
-        )  # List of (original_name_for_matching, raw_name_from_file)
+        taxon_names_info: List[Tuple[str, str]] = []
+        # List of (original_name_for_matching, raw_name_from_file)
         has_taxlabels = False
 
         if taxlabels_content:
@@ -146,10 +176,10 @@ def nexus_to_fasta(input_file, output_file):
                 original_name_for_matching = unquote_taxon_name(name_in_label)
                 taxon_names_info.append((original_name_for_matching, name_in_label))
 
-        taxon_to_sequence_parts = {}
+        taxon_to_sequence_parts: Dict[str, List[str]] = {}
         current_taxon_index_in_block = 0
 
-        # Optimization: Sort taxa by length descending once to avoid re-sorting on every line
+        # Optimization: Sort taxa by length descending once to avoid re-sorting
         sorted_taxa = sorted(taxon_names_info, key=lambda x: len(x[0]), reverse=True)
         # Optimization: Cache taxon names for index lookup
         taxon_list = [t[0] for t in taxon_names_info]
@@ -157,11 +187,11 @@ def nexus_to_fasta(input_file, output_file):
         for line in matrix_lines:
             line = line.strip()
             if not line:
-                # 2. Fix: Blank lines reset the positional counter but don't stop discovery
+                # Blank lines reset the positional counter but don't stop discovery
                 current_taxon_index_in_block = 0
                 continue
 
-            found_taxon = None
+            found_taxon: Optional[str] = None
             name_len_in_line = 0
 
             token_match = TAXON_NAME_SPLIT_PATTERN.match(line)
@@ -172,7 +202,7 @@ def nexus_to_fasta(input_file, output_file):
             )
 
             # Match with existing known taxa using token-based approach
-            if has_space_after_token:
+            if has_space_after_token and token_match:
                 token = token_match.group(0)
                 unquoted_token_cf = unquote_taxon_name(token).casefold()
 
@@ -187,7 +217,7 @@ def nexus_to_fasta(input_file, output_file):
             # Fallback: Discovery or Positional assignment
             if not found_taxon:
                 # 1. Discovery (if allowed and looks like name+seq)
-                if has_space_after_token and not has_taxlabels:
+                if has_space_after_token and not has_taxlabels and token_match:
                     raw_name = token_match.group(0)
                     name_len_in_line = token_match.end()
                     found_taxon = unquote_taxon_name(raw_name)
@@ -210,7 +240,7 @@ def nexus_to_fasta(input_file, output_file):
                         unquoted_token_cf = unquote_taxon_name(token).casefold()
                         for taxon_original in taxon_list:
                             if unquoted_token_cf == taxon_original.casefold():
-                                # It's a header line: set index for next line, skip assignment
+                                # Header line: set index for next line, skip assignment
                                 current_taxon_index_in_block = taxon_list.index(
                                     taxon_original
                                 )
@@ -223,7 +253,7 @@ def nexus_to_fasta(input_file, output_file):
                         name_len_in_line = 0
                         current_taxon_index_in_block += 1
 
-                # 3. Warning (looks like name+seq but no known taxon and no positional slot)
+                # 3. Warning (looks like name+seq but no known taxon and no positional)
                 elif has_space_after_token:
                     print(
                         f"Warning: Line does not match any known taxon: {line[:50]}..."
@@ -236,8 +266,8 @@ def nexus_to_fasta(input_file, output_file):
                 taxon_to_sequence_parts[found_taxon].append(seq_part)
 
         # Assemble sequences and ensure unique FASTA headers
-        used_fasta_names = set()
-        final_sequences = []
+        used_fasta_names: Set[str] = set()
+        final_sequences: List[Tuple[str, str]] = []
 
         for taxon_original, raw_name in taxon_names_info:
             if taxon_original in taxon_to_sequence_parts:
@@ -269,10 +299,12 @@ def nexus_to_fasta(input_file, output_file):
         sys.exit(1)
 
 
-def main():
+def main() -> None:
+    """Main entry point for the script."""
     if len(sys.argv) != 3:
         print(
-            "Usage: python convert.treebase.nexus.to.fasta.py input_file.nexus output_file.fasta"
+            "Usage: python convert.treebase.nexus.to.fasta.py input_file.nexus "
+            "output_file.fasta"
         )
         sys.exit(1)
 
