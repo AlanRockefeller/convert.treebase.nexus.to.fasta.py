@@ -4,9 +4,9 @@
 
 # Handles special characters well, at least the ones I have come across so far.   Older versions of this code didn't.
 
-# By Alan Rockefeller - June 3, 2025
+# By Alan Rockefeller - February 21, 2026
 
-# Version 1.0
+# Version 1.3
 
 
 import sys
@@ -14,10 +14,87 @@ import re
 import os
 
 # Compiled regex patterns for use in nexus_to_fasta
-MATRIX_PATTERN = re.compile(r"MATRIX\s*(.*?);", re.DOTALL)
-TAXLABELS_PATTERN = re.compile(r"TAXLABELS\s*(.*?);", re.DOTALL)
-TAXON_NAME_SPLIT_PATTERN = re.compile(r"'[^']*'|\S+")
+# Support single and double quoted names, or unquoted tokens
+TAXON_NAME_SPLIT_PATTERN = re.compile(r"'[^']*'|\"[^\"]*\"|\S+")
 SEQUENCE_WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
+def unquote_taxon_name(name):
+    """Removes single or double quotes from a taxon name if present."""
+    if (name.startswith("'") and name.endswith("'")) or (
+        name.startswith('"') and name.endswith('"')
+    ):
+        if len(name) > 1:
+            return name[1:-1]
+    return name
+
+
+def strip_nexus_comments(text):
+    """Removes bracketed NEXUS comments, handling nested brackets and quotes."""
+    result = []
+    depth = 0
+    in_quote = None  # None, "'", or '"'
+
+    for char in text:
+        if in_quote:
+            if char == in_quote:
+                in_quote = None
+            result.append(char)
+        elif char == "'" or char == '"':
+            in_quote = char
+            result.append(char)
+        elif char == '[':
+            depth += 1
+        elif char == ']':
+            if depth > 0:
+                depth -= 1
+        elif depth == 0:
+            result.append(char)
+    return "".join(result)
+
+
+def extract_nexus_block(content, block_name):
+    """Extracts a block like MATRIX or TAXLABELS, handling nested brackets and semicolons inside quotes."""
+    # Use word boundaries to avoid matching substrings of other words
+    pattern = re.compile(r"\b" + re.escape(block_name) + r"\b\s*", re.IGNORECASE)
+    match = pattern.search(content)
+    if not match:
+        return None
+    
+    start_index = match.end()
+    depth = 0
+    in_quote = None
+
+    for i in range(start_index, len(content)):
+        char = content[i]
+        
+        if in_quote:
+            if char == in_quote:
+                in_quote = None
+        elif char == "'" or char == '"':
+            in_quote = char
+        elif char == '[':
+            depth += 1
+        elif char == ']':
+            if depth > 0:
+                depth -= 1
+        elif char == ';' and depth == 0:
+            return content[start_index:i].strip()
+    return None
+
+
+def make_unique(name, used_names):
+    """Makes a FASTA header unique by appending _2, _3, etc. if needed."""
+    if name not in used_names:
+        used_names.add(name)
+        return name
+    base = name
+    counter = 2
+    while f"{base}_{counter}" in used_names:
+        counter += 1
+    new_name = f"{base}_{counter}"
+    used_names.add(new_name)
+    return new_name
 
 
 def nexus_to_fasta(input_file, output_file):
@@ -28,140 +105,150 @@ def nexus_to_fasta(input_file, output_file):
         input_file (str): Path to the input NEXUS file
         output_file (str): Path to the output FASTA file
     """
+    content = None
     try:
         with open(input_file, "r", encoding="utf-8") as f:
             content = f.read()
     except FileNotFoundError:
         print(f"Error: Input file not found: {input_file}")
         sys.exit(1)
-        return  # Add return to stop execution in mocked environment
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         sys.exit(1)
-        return  # Add return here too
+
+    if content is None:
+        return
 
     # Find the MATRIX section in the NEXUS file
-    matrix_match = MATRIX_PATTERN.search(content)
-    if not matrix_match:
+    matrix_content_raw = extract_nexus_block(content, "MATRIX")
+    if matrix_content_raw is None:
         print("Error: Could not find the MATRIX section in the NEXUS file.")
         sys.exit(1)
-        return  # Add return to stop execution in mocked environment
+        return
 
-    matrix_content = matrix_match.group(1).strip()
+    # 1. Fix: Strip comments from the entire block at once to handle multi-line comments
+    matrix_content_cleaned = strip_nexus_comments(matrix_content_raw)
+    matrix_lines = matrix_content_cleaned.split("\n")
 
     try:
-        # Find all taxon names in the TAXLABELS section to ensure proper handling
-        taxlabels_match = TAXLABELS_PATTERN.search(content)
-        taxon_names = []
-        if taxlabels_match:
-            taxlabels_content = taxlabels_match.group(1).strip()
-            # Extract each taxon name, preserving quoted names as a single entity
+        # Find all taxon names in the TAXLABELS section
+        taxlabels_content = extract_nexus_block(content, "TAXLABELS")
+        taxon_names_info = []  # List of (original_name_for_matching, raw_name_from_file)
+        has_taxlabels = False
+        
+        if taxlabels_content:
+            has_taxlabels = True
+            taxlabels_content = strip_nexus_comments(taxlabels_content)
             raw_names = TAXON_NAME_SPLIT_PATTERN.findall(taxlabels_content)
             for name_in_label in raw_names:
-                # Store the original name (potentially quoted) for cleaning for FASTA header
-                # Store the unquoted version as 'taxon_original' for matching in MATRIX
+                original_name_for_matching = unquote_taxon_name(name_in_label)
+                taxon_names_info.append((original_name_for_matching, name_in_label))
 
-                original_name_for_matching = name_in_label
-                if (name_in_label.startswith("'") and name_in_label.endswith("'")) or (
-                    name_in_label.startswith('"') and name_in_label.endswith('"')
-                ):
-                    if len(name_in_label) > 1:  # Avoid issues with just "'" or '"'
-                        original_name_for_matching = name_in_label[1:-1]
+        taxon_to_sequence_parts = {}
+        current_taxon_index_in_block = 0
 
-                # Revert to simpler cleaning for FASTA header to isolate the issue
-                # This was the logic that seemed most likely to be correct.
-                clean_name_for_fasta = (
-                    name_in_label.replace("'", "").replace('"', "").replace(" ", "_")
-                )
+        # Optimization: Sort taxa by length descending once to avoid re-sorting on every line
+        sorted_taxa = sorted(taxon_names_info, key=lambda x: len(x[0]), reverse=True)
+        # Optimization: Cache taxon names for index lookup
+        taxon_list = [t[0] for t in taxon_names_info]
 
-                taxon_names.append((original_name_for_matching, clean_name_for_fasta))
-
-        # Refactored sequence extraction logic
-        sequences = []
-        matrix_lines = matrix_content.strip().split("\n")
-        taxon_to_sequence_parts = {}  # 1. Initialize dictionary
-
-        # 2. Single pass through matrix_lines
         for line in matrix_lines:
             line = line.strip()
             if not line:
+                # 2. Fix: Blank lines reset the positional counter but don't stop discovery
+                current_taxon_index_in_block = 0
                 continue
 
-            # 3a. Determine which taxon this line belongs to
-            # found_taxon_for_line = False # Keep for debugging if needed
-            for taxon_original, _ in taxon_names:
-                # 3b. Check for original_name (and quoted versions)
-                prefix_to_check = ""
-                name_len_in_line = 0
-                actual_taxon_name_in_line = ""
+            found_taxon = None
+            name_len_in_line = 0
 
-                # Check quoted versions first
-                quoted_single = f"'{taxon_original}'"
-                quoted_double = f'"{taxon_original}"'
+            token_match = TAXON_NAME_SPLIT_PATTERN.match(line)
+            has_space_after_token = token_match and token_match.end() < len(line) and line[token_match.end()].isspace()
 
-                if line.startswith(quoted_single):
-                    prefix_to_check = quoted_single
-                    name_len_in_line = len(quoted_single)
-                    actual_taxon_name_in_line = taxon_original
-                elif line.startswith(quoted_double):
-                    prefix_to_check = quoted_double
-                    name_len_in_line = len(quoted_double)
-                    actual_taxon_name_in_line = taxon_original
-                elif line.startswith(taxon_original):
-                    # Check unquoted version last to avoid issues if a taxon name is a prefix of another's quoted version
-                    prefix_to_check = taxon_original
-                    name_len_in_line = len(taxon_original)
-                    actual_taxon_name_in_line = taxon_original
+            # Match with existing known taxa using token-based approach
+            if has_space_after_token:
+                token = token_match.group(0)
+                unquoted_token_cf = unquote_taxon_name(token).casefold()
+                
+                for taxon_original, _ in sorted_taxa:
+                    if unquoted_token_cf == taxon_original.casefold():
+                        found_taxon = taxon_original
+                        name_len_in_line = token_match.end()
+                        # Update positional tracker for interleaved consistency
+                        current_taxon_index_in_block = taxon_list.index(found_taxon) + 1
+                        break
 
-                if prefix_to_check:  # If any match type was found
-                    # Ensure it's a full word match (ends line or followed by space)
-                    if len(line) == name_len_in_line or (
-                        len(line) > name_len_in_line
-                        and line[name_len_in_line].isspace()
-                    ):
-                        # 3c. Extract sequence part
-                        seq_part = line[name_len_in_line:].strip()
+            # Fallback: Discovery or Positional assignment
+            if not found_taxon:
+                # 1. Discovery (if allowed and looks like name+seq)
+                if has_space_after_token and not has_taxlabels:
+                    raw_name = token_match.group(0)
+                    name_len_in_line = token_match.end()
+                    found_taxon = unquote_taxon_name(raw_name)
+                    if found_taxon not in taxon_list:
+                        taxon_names_info.append((found_taxon, raw_name))
+                        taxon_list.append(found_taxon)
+                        # Re-sort only when new taxon is discovered
+                        sorted_taxa = sorted(taxon_names_info, key=lambda x: len(x[0]), reverse=True)
+                    
+                    current_taxon_index_in_block = taxon_list.index(found_taxon) + 1
+                
+                # 2. Positional Assignment (Interleaved continuation)
+                elif current_taxon_index_in_block < len(taxon_list):
+                    # Check if the line is JUST a known taxon name (header-only line)
+                    is_header_only = False
+                    if token_match and token_match.end() == len(line):
+                        token = token_match.group(0)
+                        unquoted_token_cf = unquote_taxon_name(token).casefold()
+                        for taxon_original in taxon_list:
+                            if unquoted_token_cf == taxon_original.casefold():
+                                # It's a header line: set index for next line, skip assignment
+                                current_taxon_index_in_block = taxon_list.index(taxon_original)
+                                is_header_only = True
+                                break
+                    
+                    if not is_header_only:
+                        # Interleaved positional assignment
+                        found_taxon = taxon_list[current_taxon_index_in_block]
+                        name_len_in_line = 0
+                        current_taxon_index_in_block += 1
+                
+                # 3. Warning (looks like name+seq but no known taxon and no positional slot)
+                elif has_space_after_token:
+                    print(f"Warning: Line does not match any known taxon: {line[:50]}...")
 
-                        # 3d. Append to taxon_to_sequence_parts
-                        if actual_taxon_name_in_line not in taxon_to_sequence_parts:
-                            taxon_to_sequence_parts[actual_taxon_name_in_line] = []
-                        taxon_to_sequence_parts[actual_taxon_name_in_line].append(
-                            seq_part
-                        )
-                        # found_taxon_for_line = True # Keep for debugging if needed
-                        break  # Found taxon for this line, move to next line
-            # if not found_taxon_for_line: # Keep for debugging if needed
-            #     print(f"Warning: Line orphaned or taxon name mismatch: {line[:50]}...")
+            if found_taxon:
+                seq_part = line[name_len_in_line:].strip()
+                if found_taxon not in taxon_to_sequence_parts:
+                    taxon_to_sequence_parts[found_taxon] = []
+                taxon_to_sequence_parts[found_taxon].append(seq_part)
 
-        # 4. Assemble sequences from parts
-        assembled_sequences = {}
-        for taxon_original, parts in taxon_to_sequence_parts.items():
-            full_sequence = "".join(parts)
-            full_sequence = SEQUENCE_WHITESPACE_PATTERN.sub(
-                "", full_sequence
-            )  # Remove all whitespace
-            assembled_sequences[taxon_original] = full_sequence
-
-        # 5. Build final sequences list and 6. Handle missing taxa
-        for taxon_original, taxon_clean in taxon_names:
-            if (
-                taxon_original in assembled_sequences
-                and assembled_sequences[taxon_original]
-            ):
-                sequences.append((taxon_clean, assembled_sequences[taxon_original]))
+        # Assemble sequences and ensure unique FASTA headers
+        used_fasta_names = set()
+        final_sequences = []
+        
+        for taxon_original, raw_name in taxon_names_info:
+            if taxon_original in taxon_to_sequence_parts:
+                parts = taxon_to_sequence_parts[taxon_original]
+                full_sequence = "".join(parts)
+                full_sequence = SEQUENCE_WHITESPACE_PATTERN.sub("", full_sequence)
+                
+                clean_name = raw_name.replace("'", "").replace('"', "")
+                clean_name = re.sub(r"\s+", "_", clean_name)
+                clean_name = make_unique(clean_name, used_fasta_names)
+                
+                final_sequences.append((clean_name, full_sequence))
             else:
-                # This covers taxa in TAXLABELS but not in MATRIX or with empty sequence
                 print(f"Warning: No sequence found for taxon '{taxon_original}'")
 
         # Write sequences in FASTA format
         with open(output_file, "w", encoding="utf-8") as f:
-            for taxon_name, sequence in sequences:
+            for taxon_name, sequence in final_sequences:
                 f.write(f">{taxon_name}\n")
-                # Write sequence in blocks of 60 characters
                 for i in range(0, len(sequence), 60):
                     f.write(sequence[i : i + 60] + "\n")
 
-        print(f"Successfully converted {len(sequences)} sequences to FASTA format.")
+        print(f"Successfully converted {len(final_sequences)} sequences to FASTA format.")
 
     except Exception as e:
         print(f"An error occurred during NEXUS parsing or FASTA writing: {e}")
