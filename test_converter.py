@@ -112,7 +112,9 @@ BEGIN CHARACTERS; MATRIX "taxon two" TGCA; END;
         expected_fasta = ">taxon_two\nTGCA\n"  # Expected output for the simplified case
         self.assertEqual(fasta_content, expected_fasta)
 
-    @patch(f"{module_name}.sys.exit", side_effect=SystemExit(1))  # Patch sys.exit inside the loaded module
+    @patch(
+        f"{module_name}.sys.exit", side_effect=SystemExit(1)
+    )  # Patch sys.exit inside the loaded module
     def test_missing_matrix_section(self, mock_sys_exit):
         nexus_content = """#NEXUS SIMPLIFIED CONTENT NOMATRIX"""  # Minimal content, no MATRIX, no semicolon
         self._write_input_nexus(nexus_content)
@@ -126,7 +128,9 @@ BEGIN CHARACTERS; MATRIX "taxon two" TGCA; END;
             sys.stdout.getvalue(),
         )
 
-    @patch(f"{module_name}.sys.exit", side_effect=SystemExit(1))  # Patch sys.exit inside the loaded module
+    @patch(
+        f"{module_name}.sys.exit", side_effect=SystemExit(1)
+    )  # Patch sys.exit inside the loaded module
     def test_input_file_not_found_main(self, mock_sys_exit):
         non_existent_file = os.path.join(self.test_dir, "no_such_file.nexus")
 
